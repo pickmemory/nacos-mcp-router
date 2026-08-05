@@ -32,6 +32,37 @@ transport_type: str = TRANSPORT_TYPE_STDIO
 auto_register_tools: bool = True
 proxied_mcp_version: str = ''
 mcp_app: Server
+
+# ─────────────── 客户端 env 配置透传（X-MCP-Env-Config）───────────────
+# 客户端（如 .mcp.json 的 headers）把「按 mcp 名分块的配置 JSON」整体 URL 编码后
+# 放入统一 header X-MCP-Env-Config 传递；router 按被路由的 mcp 名称取对应块，
+# 整体编码后附加到对该 server 的请求头，下游统一解码取配置。
+
+ENV_CONFIG_HEADER = "X-MCP-Env-Config"
+
+
+def _parse_env_config_header(client_headers: dict[str, str]) -> dict:
+    """从客户端请求头解析整体编码的 env 配置（容错：无/非法时返回空 dict）。"""
+    raw = None
+    for k, v in client_headers.items():
+        if k.lower() == ENV_CONFIG_HEADER.lower():
+            raw = v
+            break
+    if not raw:
+        return {}
+    try:
+        import urllib.parse
+        return json.loads(urllib.parse.unquote(raw))
+    except Exception:
+        router_logger.warning("failed to parse X-MCP-Env-Config header")
+        return {}
+
+
+def _encode_env_block(env_block: dict) -> str:
+    """把单个 mcp 的配置块整体 URL 编码（下游统一解码）。"""
+    import urllib.parse
+    return urllib.parse.quote(json.dumps(env_block, ensure_ascii=False), safe='')
+
 def router_tools() -> list[types.Tool]:
     return [
         types.Tool(
@@ -266,6 +297,7 @@ async def add_mcp_server(mcp_server_name: str, client_headers: dict[str, str] = 
                 mcp_server.agentConfig['mcpServers'] = {}
 
             mcp_servers = mcp_server.agentConfig["mcpServers"]
+            env_all = _parse_env_config_header(client_headers)
             for key, value in mcp_servers.items():
                 server_config = value
                 if 'env' in server_config:
@@ -274,6 +306,10 @@ async def add_mcp_server(mcp_server_name: str, client_headers: dict[str, str] = 
                 server_config['env'] = env
                 if 'headers' not in server_config:
                     server_config['headers'] = {}
+                # 按被路由的 mcp 名称取客户端配置块，整体编码后附加到请求头（下游统一解码）
+                env_block = env_all.get(key)
+                if env_block and isinstance(env_block, dict) and len(env_block) > 0:
+                    server_config['headers'][ENV_CONFIG_HEADER] = _encode_env_block(env_block)
             router_logger.info(f"add mcp server: {mcp_server_name}, config:{mcp_server.agentConfig}")
             server = CustomServer(name=mcp_server_name, config=mcp_server.agentConfig)
             if server._protocol == 'stdio':
@@ -282,6 +318,21 @@ async def add_mcp_server(mcp_server_name: str, client_headers: dict[str, str] = 
                     mcp_servers_dict[mcp_server_name] = server
             else:
                 mcp_servers_dict[mcp_server_name] = server
+        elif mcp_servers_dict.get(mcp_server_name) is not None:
+            # 缓存命中：仍按本次调用者的配置更新该 server 的转发 headers，
+            # 避免多用户共用 router 时串用上一用户的配置（PAT 即身份，必须按调用者隔离）
+            existing = mcp_servers_dict[mcp_server_name]
+            env_all = _parse_env_config_header(client_headers)
+            env_block = env_all.get(mcp_server_name)
+            if env_block and isinstance(env_block, dict) and len(env_block) > 0:
+                if existing.config is not None:
+                    mcp_servers = existing.config.get("mcpServers", {})
+                    server_cfg = mcp_servers.get(mcp_server_name)
+                    if server_cfg is not None:
+                        if 'headers' not in server_cfg:
+                            server_cfg['headers'] = {}
+                        server_cfg['headers'][ENV_CONFIG_HEADER] = _encode_env_block(env_block)
+                        router_logger.info(f"update mcp server headers: {mcp_server_name}")
         
         if mcp_server_name not in mcp_servers_dict:
             return "failed to install mcp server: " + mcp_server_name
