@@ -1,6 +1,8 @@
 # 基于 0.2.5 镜像，修复 add_mcp_server 缓存命中时不更新配置的问题（tag 0.2.6）
+# 0.2.7：ChromaDb 支持外部 OpenAI 兼容 embedding 模型（EMBEDDING_PROVIDER 等 env）
 FROM ccr.ccs.tencentyun.com/mcp-test/nacos-mcp-router:0.2.5
 COPY docker-patch/router.py /usr/local/lib/python3.12/site-packages/nacos_mcp_router/router.py
+COPY docker-patch/router_types.py /usr/local/lib/python3.12/site-packages/nacos_mcp_router/router_types.py
 COPY docker-patch/mcp_transport.py /usr/local/lib/python3.12/site-packages/nacos_mcp_router/mcp_transport.py
 COPY docker-patch/streamable_http_transport.py /usr/local/lib/python3.12/site-packages/nacos_mcp_router/streamable_http_transport.py
 COPY docker-patch/sse_transport.py /usr/local/lib/python3.12/site-packages/nacos_mcp_router/sse_transport.py
